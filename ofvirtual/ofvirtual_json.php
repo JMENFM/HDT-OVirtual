@@ -1,844 +1,376 @@
-<?php
-/* vim: set expandtab tabstop=4 shiftwidth=4 softtabstop=4: */
-
-/**
- * Converts to and from JSON format.
- *
- * JSON (JavaScript Object Notation) is a lightweight data-interchange
- * format. It is easy for humans to read and write. It is easy for machines
- * to parse and generate. It is based on a subset of the JavaScript
- * Programming Language, Standard ECMA-262 3rd Edition - December 1999.
- * This feature can also be found in  Python. JSON is a text format that is
- * completely language independent but uses conventions that are familiar
- * to programmers of the C-family of languages, including C, C++, C#, Java,
- * JavaScript, Perl, TCL, and many others. These properties make JSON an
- * ideal data-interchange language.
- *
- * This package provides a simple encoder and decoder for JSON notation. It
- * is intended for use with client-side Javascript applications that make
- * use of HTTPRequest to perform server communication functions - data can
- * be encoded into JSON notation for use in a client-side javascript, or
- * decoded from incoming Javascript requests. JSON format is native to
- * Javascript, and can be directly eval()'ed with no further parsing
- * overhead
- *
- * All strings should be in ASCII or UTF-8 format!
- *
- * LICENSE: Redistribution and use in source and binary forms, with or
- * without modification, are permitted provided that the following
- * conditions are met: Redistributions of source code must retain the
- * above copyright notice, this list of conditions and the following
- * disclaimer. Redistributions in binary form must reproduce the above
- * copyright notice, this list of conditions and the following disclaimer
- * in the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN
- * NO EVENT SHALL CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
- * OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
- * TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
- * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
- * DAMAGE.
- *
- * @category
- * @package     Services_JSON
- * @author      Michal Migurski <mike-json@teczno.com>
- * @author      Matt Knapp <mdknapp[at]gmail[dot]com>
- * @author      Brett Stimmerman <brettstimmerman[at]gmail[dot]com>
- * @copyright   2005 Michal Migurski
- * @version     CVS: $Id: json.php,v 1.1.1.1 2011-05-12 20:31:11 diogo Exp $
- * @license     http://www.opensource.org/licenses/bsd-license.php
- * @link        http://pear.php.net/pepr/pepr-proposal-show.php?id=198
- */
-
-/**
- * Marker constant for Services_JSON::decode(), used to flag stack state
- */
-define('SERVICES_JSON_SLICE',   1);
-
-/**
- * Marker constant for Services_JSON::decode(), used to flag stack state
- */
-define('SERVICES_JSON_IN_STR',  2);
-
-/**
- * Marker constant for Services_JSON::decode(), used to flag stack state
- */
-define('SERVICES_JSON_IN_ARR',  3);
-
-/**
- * Marker constant for Services_JSON::decode(), used to flag stack state
- */
-define('SERVICES_JSON_IN_OBJ',  4);
-
-/**
- * Marker constant for Services_JSON::decode(), used to flag stack state
- */
-define('SERVICES_JSON_IN_CMT', 5);
-
-/**
- * Behavior switch for Services_JSON::decode()
- */
-define('SERVICES_JSON_LOOSE_TYPE', 16);
-
-/**
- * Behavior switch for Services_JSON::decode()
- */
-define('SERVICES_JSON_SUPPRESS_ERRORS', 32);
-
-/**
- * Converts to and from JSON format.
- *
- * Brief example of use:
- *
- * <code>
- * // create a new instance of Services_JSON
- * $json = new Services_JSON();
- *
- * // convert a complexe value to JSON notation, and send it to the browser
- * $value = array('foo', 'bar', array(1, 2, 'baz'), array(3, array(4)));
- * $output = $json->encode($value);
- *
- * print($output);
- * // prints: ["foo","bar",[1,2,"baz"],[3,[4]]]
- *
- * // accept incoming POST data, assumed to be in JSON notation
- * $input = file_get_contents('php://input', 1000000);
- * $value = $json->decode($input);
- * </code>
- */
-class Services_JSON
-{
-   /**
-    * constructs a new JSON instance
-    *
-    * @param    int     $use    object behavior flags; combine with boolean-OR
-    *
-    *                           possible values:
-    *                           - SERVICES_JSON_LOOSE_TYPE:  loose typing.
-    *                                   "{...}" syntax creates associative arrays
-    *                                   instead of objects in decode().
-    *                           - SERVICES_JSON_SUPPRESS_ERRORS:  error suppression.
-    *                                   Values which can't be encoded (e.g. resources)
-    *                                   appear as NULL instead of throwing errors.
-    *                                   By default, a deeply-nested resource will
-    *                                   bubble up with an error, so all return values
-    *                                   from encode() should be checked with isError()
-    */
-    function __construct($use = 0)
-    {
-        $this->use = $use;
-    }
-
-   /**
-    * convert a string from one UTF-16 char to one UTF-8 char
-    *
-    * Normally should be handled by mb_convert_encoding, but
-    * provides a slower PHP-only method for installations
-    * that lack the multibye string extension.
-    *
-    * @param    string  $utf16  UTF-16 character
-    * @return   string  UTF-8 character
-    * @access   private
-    */
-    function utf162utf8($utf16)
-    {
-        // oh please oh please oh please oh please oh please
-        if(function_exists('mb_convert_encoding')) {
-            return mb_convert_encoding($utf16, 'UTF-8', 'UTF-16');
-        }
-
-        $bytes = (ord($utf16[0]) << 8) | ord($utf16[1]);
-
-        switch(true) {
-            case ((0x7F & $bytes) == $bytes):
-                // this case should never be reached, because we are in ASCII range
-                // see: http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                return chr(0x7F & $bytes);
-
-            case (0x07FF & $bytes) == $bytes:
-                // return a 2-byte UTF-8 character
-                // see: http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                return chr(0xC0 | (($bytes >> 6) & 0x1F))
-                     . chr(0x80 | ($bytes & 0x3F));
-
-            case (0xFFFF & $bytes) == $bytes:
-                // return a 3-byte UTF-8 character
-                // see: http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                return chr(0xE0 | (($bytes >> 12) & 0x0F))
-                     . chr(0x80 | (($bytes >> 6) & 0x3F))
-                     . chr(0x80 | ($bytes & 0x3F));
-        }
-
-        // ignoring UTF-32 for now, sorry
-        return '';
-    }
-
-   /**
-    * convert a string from one UTF-8 char to one UTF-16 char
-    *
-    * Normally should be handled by mb_convert_encoding, but
-    * provides a slower PHP-only method for installations
-    * that lack the multibye string extension.
-    *
-    * @param    string  $utf8   UTF-8 character
-    * @return   string  UTF-16 character
-    * @access   private
-    */
-    function utf82utf16($utf8)
-    {
-        // oh please oh please oh please oh please oh please
-        if(function_exists('mb_convert_encoding')) {
-            return mb_convert_encoding($utf8, 'UTF-16', 'UTF-8');
-        }
-
-        switch(strlen($utf8)) {
-            case 1:
-                // this case should never be reached, because we are in ASCII range
-                // see: http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                return $utf8;
-
-            case 2:
-                // return a UTF-16 character from a 2-byte UTF-8 char
-                // see: http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                return chr(0x07 & (ord($utf8[0]) >> 2))
-                     . chr((0xC0 & (ord($utf8[0]) << 6))
-                         | (0x3F & ord($utf8[1])));
-
-            case 3:
-                // return a UTF-16 character from a 3-byte UTF-8 char
-                // see: http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                return chr((0xF0 & (ord($utf8[0]) << 4))
-                         | (0x0F & (ord($utf8[1]) >> 2)))
-                     . chr((0xC0 & (ord($utf8[1]) << 6))
-                         | (0x7F & ord($utf8[2])));
-        }
-
-        // ignoring UTF-32 for now, sorry
-        return '';
-    }
-
-   /**
-    * encodes an arbitrary variable into JSON format
-    *
-    * @param    mixed   $var    any number, boolean, string, array, or object to be encoded.
-    *                           see argument 1 to Services_JSON() above for array-parsing behavior.
-    *                           if var is a strng, note that encode() always expects it
-    *                           to be in ASCII or UTF-8 format!
-    *
-    * @return   mixed   JSON string representation of input var or an error if a problem occurs
-    * @access   public
-    */
-    function encode($var)
-    {
-        switch (gettype($var)) {
-            case 'boolean':
-                return $var ? 'true' : 'false';
-
-            case 'NULL':
-                return 'null';
-
-            case 'integer':
-                return (int) $var;
-
-            case 'double':
-            case 'float':
-                return (float) $var;
-
-            case 'string':
-                // STRINGS ARE EXPECTED TO BE IN ASCII OR UTF-8 FORMAT
-                $ascii = '';
-                $strlen_var = strlen($var);
-
-               /*
-                * Iterate over every character in the string,
-                * escaping with a slash or encoding to UTF-8 where necessary
-                */
-                for ($c = 0; $c < $strlen_var; ++$c) {
-
-// PHP 8.0                    $ord_var_c = ord($var{$c});
-                    $ord_var_c = ord($var[$c]);
-
-                    switch (true) {
-                        case $ord_var_c == 0x08:
-                            $ascii .= '\b';
-                            break;
-                        case $ord_var_c == 0x09:
-                            $ascii .= '\t';
-                            break;
-                        case $ord_var_c == 0x0A:
-                            $ascii .= '\n';
-                            break;
-                        case $ord_var_c == 0x0C:
-                            $ascii .= '\f';
-                            break;
-                        case $ord_var_c == 0x0D:
-                            $ascii .= '\r';
-                            break;
-
-                        case $ord_var_c == 0x22:
-                        case $ord_var_c == 0x2F:
-                        case $ord_var_c == 0x5C:
-                            // double quote, slash, slosh
-// PHP 8.0                            $ascii .= '\\'.$var{$c};
-                            $ascii .= '\\'.$var[$c];
-                            break;
-
-                        case (($ord_var_c >= 0x20) && ($ord_var_c <= 0x7F)):
-                            // characters U-00000000 - U-0000007F (same as ASCII)
-// PHP 8.0                            $ascii .= $var{$c};
-                            $ascii .= $var[$c];
-                            break;
-
-                        case (($ord_var_c & 0xE0) == 0xC0):
-                            // characters U-00000080 - U-000007FF, mask 110XXXXX
-                            // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-// PHP 8.0                            $char = pack('C*', $ord_var_c, ord($var{$c + 1}));
-                            $char = pack('C*', $ord_var_c, ord($var[$c + 1]));
-                            $c += 1;
-                            $utf16 = $this->utf82utf16($char);
-                            $ascii .= sprintf('\u%04s', bin2hex($utf16));
-                            break;
-
-                        case (($ord_var_c & 0xF0) == 0xE0):
-                            // characters U-00000800 - U-0000FFFF, mask 1110XXXX
-                            // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                            $char = pack('C*', $ord_var_c,
-/* PHP 8.0
-                                         ord($var{$c + 1}),
-                                         ord($var{$c + 2}));
-*/
-                                         ord($var[$c + 1]),
-                                         ord($var[$c + 2]));
-                            $c += 2;
-                            $utf16 = $this->utf82utf16($char);
-                            $ascii .= sprintf('\u%04s', bin2hex($utf16));
-                            break;
-
-                        case (($ord_var_c & 0xF8) == 0xF0):
-                            // characters U-00010000 - U-001FFFFF, mask 11110XXX
-                            // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                            $char = pack('C*', $ord_var_c,
-/* PHP 8.0
-
-                                         ord($var{$c + 1}),
-                                         ord($var{$c + 2}),
-                                         ord($var{$c + 3}));
-*/
-                                         ord($var[$c + 1]),
-                                         ord($var[$c + 2]),
-                                         ord($var[$c + 3]));
-                            $c += 3;
-                            $utf16 = $this->utf82utf16($char);
-                            $ascii .= sprintf('\u%04s', bin2hex($utf16));
-                            break;
-
-                        case (($ord_var_c & 0xFC) == 0xF8):
-                            // characters U-00200000 - U-03FFFFFF, mask 111110XX
-                            // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                            $char = pack('C*', $ord_var_c,
-/* PHP 8.0
-                                         ord($var{$c + 1}),
-                                         ord($var{$c + 2}),
-                                         ord($var{$c + 3}),
-                                         ord($var{$c + 4}));
-*/
-                                         ord($var[$c + 1]),
-                                         ord($var[$c + 2]),
-                                         ord($var[$c + 3]),
-                                         ord($var[$c + 4]));
-                            $c += 4;
-                            $utf16 = $this->utf82utf16($char);
-                            $ascii .= sprintf('\u%04s', bin2hex($utf16));
-                            break;
-
-                        case (($ord_var_c & 0xFE) == 0xFC):
-                            // characters U-04000000 - U-7FFFFFFF, mask 1111110X
-                            // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                            $char = pack('C*', $ord_var_c,
-/* PHP 8.0
-                                         ord($var{$c + 1}),
-                                         ord($var{$c + 2}),
-                                         ord($var{$c + 3}),
-                                         ord($var{$c + 4}),
-                                         ord($var{$c + 5}));
-*/
-                                         ord($var[$c + 1]),
-                                         ord($var[$c + 2]),
-                                         ord($var[$c + 3]),
-                                         ord($var[$c + 4]),
-                                         ord($var[$c + 5]));
-                            $c += 5;
-                            $utf16 = $this->utf82utf16($char);
-                            $ascii .= sprintf('\u%04s', bin2hex($utf16));
-                            break;
-                    }
-                }
-
-                return '"'.$ascii.'"';
-
-            case 'array':
-               /*
-                * As per JSON spec if any array key is not an integer
-                * we must treat the the whole array as an object. We
-                * also try to catch a sparsely populated associative
-                * array with numeric keys here because some JS engines
-                * will create an array with empty indexes up to
-                * max_index which can cause memory issues and because
-                * the keys, which may be relevant, will be remapped
-                * otherwise.
-                *
-                * As per the ECMA and JSON specification an object may
-                * have any string as a property. Unfortunately due to
-                * a hole in the ECMA specification if the key is a
-                * ECMA reserved word or starts with a digit the
-                * parameter is only accessible using ECMAScript's
-                * bracket notation.
-                */
-
-                // treat as a JSON object
-                if (is_array($var) && count($var) && (array_keys($var) !== range(0, sizeof($var) - 1))) {
-                    $properties = array_map(array($this, 'name_value'),
-                                            array_keys($var),
-                                            array_values($var));
-
-                    foreach($properties as $property) {
-                        if(Services_JSON::isError($property)) {
-                            return $property;
-                        }
-                    }
-
-                    return '{' . join(',', $properties) . '}';
-                }
-
-                // treat it like a regular array
-                $elements = array_map(array($this, 'encode'), $var);
-
-                foreach($elements as $element) {
-                    if(Services_JSON::isError($element)) {
-                        return $element;
-                    }
-                }
-
-                return '[' . join(',', $elements) . ']';
-
-            case 'object':
-                $vars = get_object_vars($var);
-
-                $properties = array_map(array($this, 'name_value'),
-                                        array_keys($vars),
-                                        array_values($vars));
-
-                foreach($properties as $property) {
-                    if(Services_JSON::isError($property)) {
-                        return $property;
-                    }
-                }
-
-                return '{' . join(',', $properties) . '}';
-
-            default:
-                return ($this->use & SERVICES_JSON_SUPPRESS_ERRORS)
-                    ? 'null'
-                    : new Services_JSON_Error(gettype($var)." can not be encoded as JSON string");
-        }
-    }
-
-   /**
-    * array-walking function for use in generating JSON-formatted name-value pairs
-    *
-    * @param    string  $name   name of key to use
-    * @param    mixed   $value  reference to an array element to be encoded
-    *
-    * @return   string  JSON-formatted name-value pair, like '"name":value'
-    * @access   private
-    */
-    function name_value($name, $value)
-    {
-        $encoded_value = $this->encode($value);
-
-        if(Services_JSON::isError($encoded_value)) {
-            return $encoded_value;
-        }
-
-        return $this->encode(strval($name)) . ':' . $encoded_value;
-    }
-
-   /**
-    * reduce a string by removing leading and trailing comments and whitespace
-    *
-    * @param    $str    string      string value to strip of comments and whitespace
-    *
-    * @return   string  string value stripped of comments and whitespace
-    * @access   private
-    */
-    function reduce_string($str)
-    {
-        $str = preg_replace(array(
-
-                // eliminate single line comments in '// ...' form
-                '#^\s*//(.+)$#m',
-
-                // eliminate multi-line comments in '/* ... */' form, at start of string
-                '#^\s*/\*(.+)\*/#Us',
-
-                // eliminate multi-line comments in '/* ... */' form, at end of string
-                '#/\*(.+)\*/\s*$#Us'
-
-            ), '', $str);
-
-        // eliminate extraneous space
-        return trim($str);
-    }
-
-   /**
-    * decodes a JSON string into appropriate variable
-    *
-    * @param    string  $str    JSON-formatted string
-    *
-    * @return   mixed   number, boolean, string, array, or object
-    *                   corresponding to given JSON input string.
-    *                   See argument 1 to Services_JSON() above for object-output behavior.
-    *                   Note that decode() always returns strings
-    *                   in ASCII or UTF-8 format!
-    * @access   public
-    */
-    function decode($str)
-    {
-        $str = $this->reduce_string($str);
-
-        switch (strtolower($str)) {
-            case 'true':
-                return true;
-
-            case 'false':
-                return false;
-
-            case 'null':
-                return null;
-
-            default:
-                $m = array();
-
-                if (is_numeric($str)) {
-                    // Lookie-loo, it's a number
-
-                    // This would work on its own, but I'm trying to be
-                    // good about returning integers where appropriate:
-                    // return (float)$str;
-
-                    // Return float or int, as appropriate
-                    return ((float)$str == (integer)$str)
-                        ? (integer)$str
-                        : (float)$str;
-
-                } elseif (preg_match('/^("|\').*(\1)$/s', $str, $m) && $m[1] == $m[2]) {
-                    // STRINGS RETURNED IN UTF-8 FORMAT
-                    $delim = substr($str, 0, 1);
-                    $chrs = substr($str, 1, -1);
-                    $utf8 = '';
-                    $strlen_chrs = strlen($chrs);
-
-                    for ($c = 0; $c < $strlen_chrs; ++$c) {
-
-                        $substr_chrs_c_2 = substr($chrs, $c, 2);
-// PHP 8.0                        $ord_chrs_c = ord($chrs{$c});
-                        $ord_chrs_c = ord($chrs[$c]);
-
-                        switch (true) {
-                            case $substr_chrs_c_2 == '\b':
-                                $utf8 .= chr(0x08);
-                                ++$c;
-                                break;
-                            case $substr_chrs_c_2 == '\t':
-                                $utf8 .= chr(0x09);
-                                ++$c;
-                                break;
-                            case $substr_chrs_c_2 == '\n':
-                                $utf8 .= chr(0x0A);
-                                ++$c;
-                                break;
-                            case $substr_chrs_c_2 == '\f':
-                                $utf8 .= chr(0x0C);
-                                ++$c;
-                                break;
-                            case $substr_chrs_c_2 == '\r':
-                                $utf8 .= chr(0x0D);
-                                ++$c;
-                                break;
-
-                            case $substr_chrs_c_2 == '\\"':
-                            case $substr_chrs_c_2 == '\\\'':
-                            case $substr_chrs_c_2 == '\\\\':
-                            case $substr_chrs_c_2 == '\\/':
-                                if (($delim == '"' && $substr_chrs_c_2 != '\\\'') ||
-                                   ($delim == "'" && $substr_chrs_c_2 != '\\"')) {
-// PHP 8.0                                    $utf8 .= $chrs{++$c};
-                                    $utf8 .= $chrs[++$c];
-                                }
-                                break;
-
-                            case preg_match('/\\\u[0-9A-F]{4}/i', substr($chrs, $c, 6)):
-                                // single, escaped unicode character
-                                $utf16 = chr(hexdec(substr($chrs, ($c + 2), 2)))
-                                       . chr(hexdec(substr($chrs, ($c + 4), 2)));
-                                $utf8 .= $this->utf162utf8($utf16);
-                                $c += 5;
-                                break;
-
-                            case ($ord_chrs_c >= 0x20) && ($ord_chrs_c <= 0x7F):
-// PHP 8.0                                $utf8 .= $chrs{$c};
-                                $utf8 .= $chrs[$c];
-                                break;
-
-                            case ($ord_chrs_c & 0xE0) == 0xC0:
-                                // characters U-00000080 - U-000007FF, mask 110XXXXX
-                                //see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                                $utf8 .= substr($chrs, $c, 2);
-                                ++$c;
-                                break;
-
-                            case ($ord_chrs_c & 0xF0) == 0xE0:
-                                // characters U-00000800 - U-0000FFFF, mask 1110XXXX
-                                // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                                $utf8 .= substr($chrs, $c, 3);
-                                $c += 2;
-                                break;
-
-                            case ($ord_chrs_c & 0xF8) == 0xF0:
-                                // characters U-00010000 - U-001FFFFF, mask 11110XXX
-                                // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                                $utf8 .= substr($chrs, $c, 4);
-                                $c += 3;
-                                break;
-
-                            case ($ord_chrs_c & 0xFC) == 0xF8:
-                                // characters U-00200000 - U-03FFFFFF, mask 111110XX
-                                // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                                $utf8 .= substr($chrs, $c, 5);
-                                $c += 4;
-                                break;
-
-                            case ($ord_chrs_c & 0xFE) == 0xFC:
-                                // characters U-04000000 - U-7FFFFFFF, mask 1111110X
-                                // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8
-                                $utf8 .= substr($chrs, $c, 6);
-                                $c += 5;
-                                break;
-
-                        }
-
-                    }
-
-                    return $utf8;
-
-                } elseif (preg_match('/^\[.*\]$/s', $str) || preg_match('/^\{.*\}$/s', $str)) {
-                    // array, or object notation
-
-                    if ($str[0] == '[') {
-                        $stk = array(SERVICES_JSON_IN_ARR);
-                        $arr = array();
-                    } else {
-                        if ($this->use & SERVICES_JSON_LOOSE_TYPE) {
-                            $stk = array(SERVICES_JSON_IN_OBJ);
-                            $obj = array();
-                        } else {
-                            $stk = array(SERVICES_JSON_IN_OBJ);
-                            $obj = new stdClass();
-                        }
-                    }
-
-                    array_push($stk, array('what'  => SERVICES_JSON_SLICE,
-                                           'where' => 0,
-                                           'delim' => false));
-
-                    $chrs = substr($str, 1, -1);
-                    $chrs = $this->reduce_string($chrs);
-
-                    if ($chrs == '') {
-                        if (reset($stk) == SERVICES_JSON_IN_ARR) {
-                            return $arr;
-
-                        } else {
-                            return $obj;
-
-                        }
-                    }
-
-                    //print("\nparsing {$chrs}\n");
-
-                    $strlen_chrs = strlen($chrs);
-
-                    for ($c = 0; $c <= $strlen_chrs; ++$c) {
-
-                        $top = end($stk);
-                        $substr_chrs_c_2 = substr($chrs, $c, 2);
-
-// PHP 8.0                        if (($c == $strlen_chrs) || (($chrs{$c} == ',') && ($top['what'] == SERVICES_JSON_SLICE))) {
-                        if (($c == $strlen_chrs) || (($chrs[$c] == ',') && ($top['what'] == SERVICES_JSON_SLICE))) {
-                            // found a comma that is not inside a string, array, etc.,
-                            // OR we've reached the end of the character list
-                            $slice = substr($chrs, $top['where'], ($c - $top['where']));
-                            array_push($stk, array('what' => SERVICES_JSON_SLICE, 'where' => ($c + 1), 'delim' => false));
-                            //print("Found split at {$c}: ".substr($chrs, $top['where'], (1 + $c - $top['where']))."\n");
-
-                            if (reset($stk) == SERVICES_JSON_IN_ARR) {
-                                // we are in an array, so just push an element onto the stack
-                                array_push($arr, $this->decode($slice));
-
-                            } elseif (reset($stk) == SERVICES_JSON_IN_OBJ) {
-                                // we are in an object, so figure
-                                // out the property name and set an
-                                // element in an associative array,
-                                // for now
-                                $parts = array();
-
-                                if (preg_match('/^\s*(["\'].*[^\\\]["\'])\s*:\s*(\S.*),?$/Uis', $slice, $parts)) {
-                                    // "name":value pair
-                                    $key = $this->decode($parts[1]);
-                                    $val = $this->decode($parts[2]);
-
-                                    if ($this->use & SERVICES_JSON_LOOSE_TYPE) {
-                                        $obj[$key] = $val;
-                                    } else {
-                                        $obj->$key = $val;
-                                    }
-                                } elseif (preg_match('/^\s*(\w+)\s*:\s*(\S.*),?$/Uis', $slice, $parts)) {
-                                    // name:value pair, where name is unquoted
-                                    $key = $parts[1];
-                                    $val = $this->decode($parts[2]);
-
-                                    if ($this->use & SERVICES_JSON_LOOSE_TYPE) {
-                                        $obj[$key] = $val;
-                                    } else {
-                                        $obj->$key = $val;
-                                    }
-                                }
-
-                            }
-
-// PHP 8.0                        } elseif ((($chrs{$c} == '"') || ($chrs{$c} == "'")) && ($top['what'] != SERVICES_JSON_IN_STR)) {
-                        } elseif ((($chrs[$c] == '"') || ($chrs[$c] == "'")) && ($top['what'] != SERVICES_JSON_IN_STR)) {
-                            // found a quote, and we are not inside a string
-// PHP 8.0                            array_push($stk, array('what' => SERVICES_JSON_IN_STR, 'where' => $c, 'delim' => $chrs{$c}));
-                            array_push($stk, array('what' => SERVICES_JSON_IN_STR, 'where' => $c, 'delim' => $chrs[$c]));
-                            //print("Found start of string at {$c}\n");
-
-// PHP 8.0                        } elseif (($chrs{$c} == $top['delim']) &&
-                        } elseif (($chrs[$c] == $top['delim']) &&
-                                 ($top['what'] == SERVICES_JSON_IN_STR) &&
-                                 ((strlen(substr($chrs, 0, $c)) - strlen(rtrim(substr($chrs, 0, $c), '\\'))) % 2 != 1)) {
-                            // found a quote, we're in a string, and it's not escaped
-                            // we know that it's not escaped becase there is _not_ an
-                            // odd number of backslashes at the end of the string so far
-                            array_pop($stk);
-                            //print("Found end of string at {$c}: ".substr($chrs, $top['where'], (1 + 1 + $c - $top['where']))."\n");
-
-// PHP 8.0                        } elseif (($chrs{$c} == '[') &&
-                        } elseif (($chrs[$c] == '[') &&
-                                 in_array($top['what'], array(SERVICES_JSON_SLICE, SERVICES_JSON_IN_ARR, SERVICES_JSON_IN_OBJ))) {
-                            // found a left-bracket, and we are in an array, object, or slice
-                            array_push($stk, array('what' => SERVICES_JSON_IN_ARR, 'where' => $c, 'delim' => false));
-                            //print("Found start of array at {$c}\n");
-
-// PHP 8.0                        } elseif (($chrs{$c} == ']') && ($top['what'] == SERVICES_JSON_IN_ARR)) {
-                        } elseif (($chrs[$c] == ']') && ($top['what'] == SERVICES_JSON_IN_ARR)) {
-                            // found a right-bracket, and we're in an array
-                            array_pop($stk);
-                            //print("Found end of array at {$c}: ".substr($chrs, $top['where'], (1 + $c - $top['where']))."\n");
-
-// PHP 8.0                        } elseif (($chrs{$c} == '{') &&
-                        } elseif (($chrs[$c] == '{') &&
-                                 in_array($top['what'], array(SERVICES_JSON_SLICE, SERVICES_JSON_IN_ARR, SERVICES_JSON_IN_OBJ))) {
-                            // found a left-brace, and we are in an array, object, or slice
-                            array_push($stk, array('what' => SERVICES_JSON_IN_OBJ, 'where' => $c, 'delim' => false));
-                            //print("Found start of object at {$c}\n");
-
-// PHP 8.0                        } elseif (($chrs{$c} == '}') && ($top['what'] == SERVICES_JSON_IN_OBJ)) {
-                        } elseif (($chrs[$c] == '}') && ($top['what'] == SERVICES_JSON_IN_OBJ)) {
-                            // found a right-brace, and we're in an object
-                            array_pop($stk);
-                            //print("Found end of object at {$c}: ".substr($chrs, $top['where'], (1 + $c - $top['where']))."\n");
-
-                        } elseif (($substr_chrs_c_2 == '/*') &&
-                                 in_array($top['what'], array(SERVICES_JSON_SLICE, SERVICES_JSON_IN_ARR, SERVICES_JSON_IN_OBJ))) {
-                            // found a comment start, and we are in an array, object, or slice
-                            array_push($stk, array('what' => SERVICES_JSON_IN_CMT, 'where' => $c, 'delim' => false));
-                            $c++;
-                            //print("Found start of comment at {$c}\n");
-
-                        } elseif (($substr_chrs_c_2 == '*/') && ($top['what'] == SERVICES_JSON_IN_CMT)) {
-                            // found a comment end, and we're in one now
-                            array_pop($stk);
-                            $c++;
-
-                            for ($i = $top['where']; $i <= $c; ++$i)
-                                $chrs = substr_replace($chrs, ' ', $i, 1);
-
-                            //print("Found end of comment at {$c}: ".substr($chrs, $top['where'], (1 + $c - $top['where']))."\n");
-
-                        }
-
-                    }
-
-                    if (reset($stk) == SERVICES_JSON_IN_ARR) {
-                        return $arr;
-
-                    } elseif (reset($stk) == SERVICES_JSON_IN_OBJ) {
-                        return $obj;
-
-                    }
-
-                }
-        }
-    }
-
-    /**
-     * @todo Ultimately, this should just call PEAR::isError()
-     */
-    function isError($data, $code = null)
-    {
-        if (class_exists('pear')) {
-            return PEAR::isError($data, $code);
-        } elseif (is_object($data) && (get_class($data) == 'services_json_error' ||
-                                 is_subclass_of($data, 'services_json_error'))) {
-            return true;
-        }
-
-        return false;
-    }
-}
-
-if (class_exists('PEAR_Error')) {
-
-    class Services_JSON_Error extends PEAR_Error
-    {
-        function __construct($message = 'unknown error', $code = null,
-                                     $mode = null, $options = null, $userinfo = null)
-        {
-            parent::PEAR_Error($message, $code, $mode, $options, $userinfo);
-        }
-    }
-
-} else {
-
-    /**
-     * @todo Ultimately, this class shall be descended from PEAR_Error
-     */
-    class Services_JSON_Error
-    {
-        function __construct($message = 'unknown error', $code = null,
-                                     $mode = null, $options = null, $userinfo = null)
-        {
-
-        }
-    }
-
-}
-
+<?php //00363
+// IONCUBE ENCODER 14.0 EVALUATION
+// THIS LICENSE MESSAGE IS ONLY ADDED BY THE EVALUATION ENCODER AND
+// IS NOT PRESENT IN PRODUCTION ENCODED FILES
+
+if(extension_loaded('ionCube Loader')){die('The file '.__FILE__." is corrupted.\n");}echo("\nScript error: the ".(($cli=(php_sapi_name()=='cli')) ?'ionCube':'<a href="https://www.ioncube.com">ionCube</a>')." Loader for PHP needs to be installed.\n\nThe ionCube Loader is the industry standard PHP extension for running protected PHP code,\nand can usually be added easily to a PHP installation.\n\nFor Loaders please visit".($cli?":\n\nhttps://get-loader.ioncube.com\n\nFor":' <a href="https://get-loader.ioncube.com">get-loader.ioncube.com</a> and for')." an instructional video please see".($cli?":\n\nhttp://ioncu.be/LV\n\n":' <a href="http://ioncu.be/LV">http://ioncu.be/LV</a> ')."\n\n");exit(199);
 ?>
+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
+cVHI/+rVjnkQ+Om=
